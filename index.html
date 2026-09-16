@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Frame Stack</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}
+main{max-width:700px;margin:auto;padding:18px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:#999;font-size:13px;margin-bottom:18px}
+.card{background:#1b1b1b;border:1px solid #303030;border-radius:14px;padding:14px;margin:10px 0}
+button,.file{appearance:none;border:0;border-radius:10px;padding:12px 14px;background:#eee;color:#111;font-size:15px;font-weight:600}
+.file{display:inline-block;cursor:pointer}input[type=file]{display:none}
+video{width:100%;max-height:45vh;background:#000;border-radius:9px;display:block}
+label{display:block;font-size:13px;color:#aaa;margin:12px 0 6px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+select,input[type=number],input[type=range]{width:100%;background:#111;color:#eee;border:1px solid #444;border-radius:8px;padding:9px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+canvas{width:100%;background:#000;border-radius:9px;display:block}
+#status{font-size:12px;color:#aaa;margin-top:9px;min-height:16px}
+.hidden{display:none}
+.small{font-size:11px;color:#777}
+</style>
+</head>
+<body>
+<main>
+<h1>FRAME STACK</h1>
+<div class="sub">One video frame → one slice → one image</div>
+
+<div class="card">
+<label class="file">Choose video<input id="file" type="file" accept="video/*"></label>
+<div id="videoWrap" class="hidden" style="margin-top:12px"><video id="video" controls playsinline></video></div>
+</div>
+
+<div class="card">
+<div class="grid">
+<div><label>Direction</label><select id="direction"><option value="v">Vertical slice → horizontal image</option><option value="h">Horizontal slice → vertical image</option></select></div>
+<div><label>Slice width</label><select id="width"><option>1</option><option>2</option><option>3</option><option>5</option><option>10</option><option>20</option></select></div>
+<div><label>Every Nth frame</label><input id="step" type="number" min="1" max="999" value="1"></div>
+<div><label>Slice position</label><select id="pos"><option value="center">Center</option><option value="left">Left / top</option><option value="right">Right / bottom</option></select></div>
+</div>
+<label>Start <span id="startVal">0.0s</span></label>
+<input id="start" type="range" min="0" max="0" step="0.01" value="0">
+<label>End <span id="endVal">0.0s</span></label>
+<input id="end" type="range" min="0" max="0" step="0.01" value="0">
+<div class="row" style="margin-top:12px"><button id="generate" disabled>GENERATE</button><button id="save" disabled>SAVE IMAGE</button></div>
+<div id="status"></div>
+</div>
+
+<div class="card hidden" id="resultCard">
+<label>Result</label>
+<canvas id="out"></canvas>
+<div class="small" style="margin-top:8px">The video is processed locally in your browser.</div>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+let url=null, duration=0;
+
+$("file").onchange=()=>{
+ const f=$("file").files[0]; if(!f)return;
+ if(url)URL.revokeObjectURL(url);
+ url=URL.createObjectURL(f);
+ $("video").src=url; $("videoWrap").classList.remove("hidden");
+ $("status").textContent="Loading video…";
+ $("video").onloadedmetadata=()=>{
+   duration=$("video").duration;
+   for(const id of ["start","end"]){$(id).max=duration}
+   $("end").value=duration;
+   $("endVal").textContent=duration.toFixed(1)+"s";
+   $("startVal").textContent="0.0s";
+   $("generate").disabled=false;
+   $("status").textContent=`${duration.toFixed(2)} s video`;
+ };
+};
+$("start").oninput=()=>{let v=+$("start").value; if(v>+$("end").value){$("end").value=v} $("startVal").textContent=v.toFixed(1)+"s"};
+$("end").oninput=()=>{let v=+$("end").value; if(v<+$("start").value){$("start").value=v} $("endVal").textContent=v.toFixed(1)+"s"};
+
+function seek(t){
+ return new Promise((res,rej)=>{
+   const v=$("video");
+   const done=()=>{v.removeEventListener("seeked",done);res()};
+   v.addEventListener("seeked",done,{once:true});
+   v.currentTime=Math.min(Math.max(t,0),duration);
+   setTimeout(()=>{v.removeEventListener("seeked",done);res()},1000);
+ });
+}
+$("generate").onclick=async()=>{
+ const v=$("video"), out=$("out"), ctx=out.getContext("2d",{alpha:false});
+ const dir=$("direction").value, sw=+$("width").value, step=Math.max(1,+$("step").value||1);
+ let a=+$("start").value,b=+$("end").value;if(b<a)[a,b]=[b,a];
+ const fpsGuess=30, frameCount=Math.max(1,Math.floor((b-a)*fpsGuess/step)+1);
+ $("status").textContent="Preparing…";
+ if(dir==="v"){
+   out.width=Math.min(frameCount*sw,32767); out.height=v.videoHeight;
+ }else{
+   out.width=v.videoWidth; out.height=Math.min(frameCount*sw,32767);
+ }
+ ctx.clearRect(0,0,out.width,out.height);
+ const scratch=document.createElement("canvas"), sc=scratch.getContext("2d",{willReadFrequently:true});
+ scratch.width=v.videoWidth;scratch.height=v.videoHeight;
+ const sourceW=dir==="v"?sw:v.videoWidth, sourceH=dir==="v"?v.videoHeight:sw;
+ const max=dir==="v"?v.videoWidth:v.videoHeight;
+ const p=$("pos").value;
+ const slicePos=p==="center"?(max-sourceW)/2:p==="left"?0:max-sourceW;
+ let i=0, t=a, durationStep=step/fpsGuess;
+ while(t<=b+1e-6 && i*sw < (dir==="v"?out.width:out.height)){
+   await seek(t);
+   sc.drawImage(v,0,0);
+   if(dir==="v"){
+     ctx.drawImage(scratch,slicePos,0,sw,v.videoHeight,i*sw,0,sw,v.videoHeight);
+   }else{
+     ctx.drawImage(scratch,0,slicePos,v.videoWidth,sw,0,i*sw,v.videoWidth,sw);
+   }
+   i++; t=a+i*durationStep;
+   if(i%10===0)$("status").textContent=`Processing ${Math.min(100,Math.round(i/frameCount*100))}%`;
+ }
+ $("resultCard").classList.remove("hidden");
+ $("save").disabled=false;
+ $("status").textContent=`Done — ${i} frames`;
+ window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});
+};
+$("save").onclick=()=>{
+ $("out").toBlob(blob=>{
+   const u=URL.createObjectURL(blob), a=document.createElement("a");
+   a.href=u;a.download="frame-stack.png";a.click();
+   setTimeout(()=>URL.revokeObjectURL(u),1000);
+ },"image/png");
+};
+</script>
+</body>
+</html>
